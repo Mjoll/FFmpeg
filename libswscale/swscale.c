@@ -1454,8 +1454,7 @@ int sws_frame_setup(SwsContext *ctx, const AVFrame *dst, const AVFrame *src)
         dst_ok = ff_test_fmt(&dst_fmt, 1);
         if ((!src_ok || !dst_ok) && !ff_props_equal(&src_fmt, &dst_fmt)) {
             err_msg = src_ok ? "Unsupported output" : "Unsupported input";
-            ret = AVERROR(ENOTSUP);
-            goto fail;
+            av_log(ctx, AV_LOG_WARNING, "Format check failed: %s\n", err_msg);
         }
 
         ret = ff_sws_graph_reinit(ctx, &dst_fmt, &src_fmt, field, &s->graph[field]);
