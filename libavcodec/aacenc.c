@@ -857,6 +857,7 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
         cpe      = &s->cpe[i];
         for (ch = 0; ch < chans; ch++) {
             int k;
+            int lfe;
             float clip_avoidance_factor;
             sce = &cpe->ch[ch];
             ics = &sce->ics;
@@ -866,7 +867,8 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
             la       = samples2 + (448+64);
             if (!frame)
                 la = NULL;
-            if (tag == TYPE_LFE) {
+            lfe = ((tag == TYPE_LFE) && !s->options.no_lfe);
+            if (lfe) {
                 wi[ch].window_type[0] = wi[ch].window_type[1] = ONLY_LONG_SEQUENCE;
                 wi[ch].window_shape   = 0;
                 wi[ch].num_windows    = 1;
@@ -888,7 +890,7 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
             ics->use_kb_window[0]   = wi[ch].window_shape;
             ics->num_windows        = wi[ch].num_windows;
             ics->swb_sizes          = s->psy.bands    [ics->num_windows == 8];
-            ics->num_swb            = tag == TYPE_LFE ? ics->num_swb : s->psy.num_bands[ics->num_windows == 8];
+            ics->num_swb            = lfe ? ics->num_swb : s->psy.num_bands[ics->num_windows == 8];
             ics->max_sfb            = FFMIN(ics->max_sfb, ics->num_swb);
             ics->swb_offset         = wi[ch].window_type[0] == EIGHT_SHORT_SEQUENCE ?
                                         ff_swb_offset_128 [s->samplerate_index]:
@@ -1224,10 +1226,21 @@ static av_cold int aac_encode_init(AVCodecContext *avctx)
 
     if (!avctx->bit_rate) {
         for (i = 1; i <= s->chan_map[0]; i++) {
-            avctx->bit_rate += s->chan_map[i] == TYPE_CPE ? 128000 : /* Pair */
-                               s->chan_map[i] == TYPE_LFE ? 16000  : /* LFE  */
-                                                            69000  ; /* SCE  */
+            switch (s->chan_map[i]) {
+              case TYPE_CPE:
+                avctx->bit_rate += 128000;
+                break;
+              case TYPE_LFE:
+                if (!s->options.no_lfe) {
+                  avctx->bit_rate += 16000;
+                  break;
+                }
+              default:
+                avctx->bit_rate += 69000;
+                break;
+            }
         }
+        av_log(avctx, AV_LOG_INFO, "Default AAC calculated to %ld\n", avctx->bit_rate);
     }
 
     /* Samplerate */
@@ -1310,6 +1323,7 @@ static const AVOption aacenc_options[] = {
     {"aac_pns", "Perceptual noise substitution", offsetof(AACEncContext, options.pns), AV_OPT_TYPE_BOOL, {.i64 = 1}, -1, 1, AACENC_FLAGS},
     {"aac_tns", "Temporal noise shaping", offsetof(AACEncContext, options.tns), AV_OPT_TYPE_BOOL, {.i64 = 1}, -1, 1, AACENC_FLAGS},
     {"aac_pce", "Forces the use of PCEs", offsetof(AACEncContext, options.pce), AV_OPT_TYPE_BOOL, {.i64 = 0}, -1, 1, AACENC_FLAGS},
+    {"no_lfe", "Encode LFE channels as regular channels", offsetof(AACEncContext, options.no_lfe), AV_OPT_TYPE_BOOL, {.i64 = 0}, -1, 1, AACENC_FLAGS},
     FF_AAC_PROFILE_OPTS
     {NULL}
 };
