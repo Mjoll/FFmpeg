@@ -287,6 +287,61 @@ static int64_t read_timestamp(AVFormatContext *s, int stream_index, int64_t *ppo
     return ts;
 }
 
+/* Advance to the first keyframe at or after the position the timestamp was read
+ * from. Starting a decoder anywhere else leaves it with nothing to output until
+ * the next keyframe, so a non-keyframe is not a usable seek point. If there is
+ * none before EOF the last frame is reported, which is >= the target and pushes
+ * the search backwards. */
+static int64_t read_timestamp_keyframe(AVFormatContext *s, int stream_index,
+                                       int64_t *ppos, int64_t pos_limit, int flags,
+                                       int64_t (*read_timestamp_func)(struct AVFormatContext *,
+                                                                      int, int64_t *, int64_t))
+{
+    int64_t ts = read_timestamp(s, stream_index, ppos, pos_limit, read_timestamp_func);
+    int64_t last_pos = -1, last_ts = AV_NOPTS_VALUE;
+    AVStream *st;
+    AVPacket *pkt;
+
+    if (ts == AV_NOPTS_VALUE || stream_index < 0 || (flags & AVSEEK_FLAG_ANY))
+        return ts;
+
+    st = s->streams[stream_index];
+    if (!ff_stream_has_keyframes(s, st))
+        return ts;
+
+    pkt = av_packet_alloc();
+    if (!pkt)
+        return ts;
+
+    ff_read_frame_flush(s);
+    if (avio_seek(s->pb, *ppos, SEEK_SET) >= 0) {
+        while (av_read_frame(s, pkt) >= 0) {
+            if (pkt->stream_index == stream_index &&
+                pkt->dts != AV_NOPTS_VALUE && pkt->pos >= 0) {
+                /* pkt->pos is only a valid seek target for demuxers that
+                 * anchor it where read_timestamp() does; rm for one reports
+                 * the packet header while pkt->pos is past it. Bail out and
+                 * leave the position to read_timestamp() if they disagree. */
+                if (last_pos < 0 && pkt->pos != *ppos)
+                    break;
+                last_pos = pkt->pos;
+                last_ts  = pkt->dts;
+                if (pkt->flags & AV_PKT_FLAG_KEY) {
+                    av_packet_unref(pkt);
+                    break;
+                }
+            }
+            av_packet_unref(pkt);
+        }
+    }
+    av_packet_free(&pkt);
+
+    if (last_pos < 0)
+        return ts;
+    *ppos = last_pos;
+    return ff_wrap_timestamp(st, last_ts);
+}
+
 int ff_seek_frame_binary(AVFormatContext *s, int stream_index,
                          int64_t target_ts, int flags)
 {
@@ -412,7 +467,8 @@ int64_t ff_gen_search(AVFormatContext *s, int stream_index, int64_t target_ts,
 
     if (ts_min == AV_NOPTS_VALUE) {
         pos_min = si->data_offset;
-        ts_min  = read_timestamp(s, stream_index, &pos_min, INT64_MAX, read_timestamp_func);
+        ts_min  = read_timestamp_keyframe(s, stream_index, &pos_min, INT64_MAX, flags,
+                                          read_timestamp_func);
         if (ts_min == AV_NOPTS_VALUE)
             return -1;
     }
@@ -463,7 +519,8 @@ int64_t ff_gen_search(AVFormatContext *s, int stream_index, int64_t target_ts,
         start_pos = pos;
 
         // May pass pos_limit instead of -1.
-        ts = read_timestamp(s, stream_index, &pos, INT64_MAX, read_timestamp_func);
+        ts = read_timestamp_keyframe(s, stream_index, &pos, INT64_MAX, flags,
+                                     read_timestamp_func);
         if (pos == pos_max)
             no_change++;
         else

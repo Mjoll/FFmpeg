@@ -964,6 +964,12 @@ static void update_initial_durations(AVFormatContext *s, AVStream *st,
         sti->cur_dts = cur_dts;
 }
 
+static int stream_is_all_intra(const AVStream *st)
+{
+    return st->codecpar->codec_type == AVMEDIA_TYPE_DATA ||
+           ff_is_intra_only(st->codecpar->codec_id);
+}
+
 static void compute_pkt_fields(AVFormatContext *s, AVStream *st,
                                AVCodecParserContext *pc, AVPacket *pkt,
                                int64_t next_dts, int64_t next_pts)
@@ -1149,8 +1155,19 @@ static void compute_pkt_fields(AVFormatContext *s, AVStream *st,
             presentation_delayed, delay, av_ts2str(pkt->pts), av_ts2str(pkt->dts), av_ts2str(sti->cur_dts), st->index, st->id);
 
     /* update flags */
-    if (st->codecpar->codec_type == AVMEDIA_TYPE_DATA || ff_is_intra_only(st->codecpar->codec_id))
+    if (stream_is_all_intra(st))
         pkt->flags |= AV_PKT_FLAG_KEY;
+}
+
+int ff_stream_has_keyframes(const AVFormatContext *s, const AVStream *st)
+{
+    const FFStream *const sti = cffstream(st);
+
+    if (stream_is_all_intra(st))
+        return 1;
+    /* not sti->parser, that is freed on flush and when drained at EOF */
+    return sti->need_parsing != AVSTREAM_PARSE_NONE &&
+           !(s->flags & AVFMT_FLAG_NOPARSE);
 }
 
 /**
