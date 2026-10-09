@@ -187,6 +187,12 @@ int ff_read_packet(AVFormatContext *s, AVPacket *pkt);
 void ff_read_frame_flush(AVFormatContext *s);
 
 /**
+ * Test whether packets of this stream can ever carry AV_PKT_FLAG_KEY.
+ * Valid once a packet of the stream has been read.
+ */
+int ff_stream_has_keyframes(const AVFormatContext *s, const AVStream *st);
+
+/**
  * Perform a binary search using av_index_search_timestamp() and
  * FFInputFormat.read_timestamp().
  *
