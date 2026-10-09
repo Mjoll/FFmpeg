@@ -3021,6 +3021,16 @@ static int mxf_parse_structural_metadata(MXFContext *mxf)
                 }
             }
 
+            /* Frame wrapped H.264 stores exactly one coded frame per edit unit,
+             * so the edit rate is the frame rate. Without this, PAFF streams get
+             * a halved avg_frame_rate: the packet holds two field pictures, but
+             * the parser only reports the first one and thus a single field. */
+            if (st->codecpar->codec_id == AV_CODEC_ID_H264 &&
+                source_track->wrapping == FrameWrapped) {
+                st->avg_frame_rate = source_track->edit_rate;
+                st->r_frame_rate = st->avg_frame_rate;
+            }
+
             if (st->codecpar->codec_id == AV_CODEC_ID_PRORES) {
                 switch (descriptor->essence_codec_ul[14]) {
                 case 1: st->codecpar->codec_tag = MKTAG('a','p','c','o'); break;
