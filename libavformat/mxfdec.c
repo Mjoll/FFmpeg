@@ -4188,6 +4188,11 @@ static int mxf_read_packet(AVFormatContext *s, AVPacket *pkt)
                     mxf->current_klv_data = (KLVPacket){{0}};
                     return ret;
                 }
+
+                if (ret < klv.length) {
+                    mxf->current_klv_data = (KLVPacket){{0}};
+                    return AVERROR_EOF;
+                }
             }
             pkt->stream_index = index;
             pkt->pos = klv.offset;
@@ -4343,10 +4348,6 @@ static int mxf_read_seek(AVFormatContext *s, int stream_index, int64_t sample_ti
                 return sample_time;
             /* get the stored order index from the display order index */
             sample_time += t->offsets[sample_time];
-        } else {
-            /* no IndexEntryArray (one or more CBR segments)
-             * make sure we don't seek past the end */
-            sample_time = FFMIN(sample_time, source_track->original_duration - 1);
         }
 
         if (source_track->wrapping == UnknownWrapped)
