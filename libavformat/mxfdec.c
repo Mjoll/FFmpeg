@@ -200,6 +200,10 @@ typedef struct MXFDescriptor {
     AVRational aspect_ratio;
     int width;
     int height; /* Field height, not frame height */
+    int x_offset;
+    int y_offset;
+    int stored_width;
+    int stored_height;
     int frame_layout; /* See MXFFrameLayout enum */
     int video_line_map[2];
 #define MXF_FIELD_DOMINANCE_DEFAULT 0
@@ -1365,6 +1369,18 @@ static int mxf_read_generic_descriptor(void *arg, AVIOContext *pb, int tag, int 
         break;
     case 0x3202:
         descriptor->height = avio_rb32(pb);
+        break;
+    case 0x3208:
+        descriptor->stored_height = avio_rb32(pb);
+        break;
+    case 0x3209:
+        descriptor->stored_width = avio_rb32(pb);
+        break;
+    case 0x320A:
+        descriptor->x_offset = avio_rb32(pb);
+        break;
+    case 0x320B:
+        descriptor->y_offset = avio_rb32(pb);
         break;
     case 0x320C:
         descriptor->frame_layout = avio_r8(pb);
@@ -2685,7 +2701,7 @@ static int parse_mca_labels(MXFContext *mxf, MXFTrack *source_track, MXFDescript
 static int mxf_parse_structural_metadata(MXFContext *mxf)
 {
     MXFPackage *material_package = NULL;
-    int k, ret;
+    int k, ret, fields_per_frame;
 
     /* TODO: handle multiple material packages (OP3x) */
     for (int i = 0; i < mxf->packages_count; i++) {
@@ -2910,8 +2926,7 @@ static int mxf_parse_structural_metadata(MXFContext *mxf)
             container_ul = mxf_get_codec_ul(mxf_picture_essence_container_uls, essence_container_ul);
             if (st->codecpar->codec_id == AV_CODEC_ID_NONE)
                 st->codecpar->codec_id = container_ul->id;
-            st->codecpar->width = descriptor->width;
-            st->codecpar->height = descriptor->height; /* Field height, not frame height */
+            fields_per_frame = 1;
             switch (descriptor->frame_layout) {
                 case FullFrame:
                     st->codecpar->field_order = AV_FIELD_PROGRESSIVE;
@@ -2968,10 +2983,24 @@ static int mxf_parse_structural_metadata(MXFContext *mxf)
                         }
                     }
                     /* Turn field height into frame height. */
-                    st->codecpar->height *= 2;
+                    fields_per_frame = 2;
                     break;
                 default:
                     av_log(mxf->fc, AV_LOG_INFO, "Unknown frame layout type: %d\n", descriptor->frame_layout);
+            }
+
+            st->codecpar->width = descriptor->width;
+            st->codecpar->height = descriptor->height * fields_per_frame;
+
+            if ((descriptor->x_offset != 0) ||
+                (descriptor->y_offset != 0) ||
+                (descriptor->stored_width != descriptor->width) ||
+                (descriptor->stored_height != descriptor->height)
+            ) {
+              av_dict_set_int(&st->metadata, "crop_x", descriptor->x_offset, 0);
+              av_dict_set_int(&st->metadata, "crop_y", descriptor->y_offset * fields_per_frame, 0);
+              av_dict_set_int(&st->metadata, "crop_w", descriptor->stored_width, 0);
+              av_dict_set_int(&st->metadata, "crop_h", descriptor->stored_height * fields_per_frame, 0);
             }
 
             if (mxf_is_st_422(essence_container_ul)) {
