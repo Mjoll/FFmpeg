@@ -1113,8 +1113,33 @@ static int h264_init_ps(H264Context *h, const H264SliceContext *sl, int first_sl
         init_dimensions(h);
 
         if (sps->vui.video_signal_type_present_flag) {
-            h->avctx->color_range = sps->vui.video_full_range_flag > 0 ? AVCOL_RANGE_JPEG
-                                                                       : AVCOL_RANGE_MPEG;
+            enum AVColorRange color_range = sps->vui.video_full_range_flag > 0 ? AVCOL_RANGE_JPEG
+                                                                               : AVCOL_RANGE_MPEG;
+
+            const char* frame = av_color_range_name(color_range);
+            if (must_reinit) {
+                av_log(
+                    h->avctx,
+                    AV_LOG_DEBUG,
+                    "Color range from SPS (%s)\n",
+                    frame ? frame : "unknown"
+                );
+            }
+
+            if (h->avctx->color_range == AVCOL_RANGE_UNSPECIFIED) {
+                h->avctx->color_range = color_range;
+            } else if (must_reinit && (h->avctx->color_range != color_range)) {
+                const char* container = av_color_range_name(h->avctx->color_range);
+                av_log(
+                    h->avctx,
+                    AV_LOG_WARNING,
+                    "Ignoring color range on SPS (%s) because a different color range "
+                    "was already set from the container (%s)\n",
+                    frame ? frame : "unknown",
+                    container ? container : "unknown"
+                );
+            }
+
             if (sps->vui.colour_description_present_flag) {
                 if (h->avctx->colorspace != sps->vui.matrix_coeffs)
                     needs_reinit = 1;
