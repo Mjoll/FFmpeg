@@ -145,7 +145,6 @@ typedef struct MXFSequence {
     UID *structural_components_refs;
     int structural_components_count;
     int64_t duration;
-    uint8_t origin;
 } MXFSequence;
 
 typedef struct MXFTimecodeComponent {
@@ -189,6 +188,7 @@ typedef struct {
     int body_sid;
     MXFWrappingScheme wrapping;
     int edit_units_per_packet; /* how many edit units to read at a time (PCM, ClipWrapped) */
+    int64_t origin;
 } MXFTrack;
 
 typedef struct MXFDescriptor {
@@ -200,6 +200,10 @@ typedef struct MXFDescriptor {
     AVRational aspect_ratio;
     int width;
     int height; /* Field height, not frame height */
+    int x_offset;
+    int y_offset;
+    int stored_width;
+    int stored_height;
     int frame_layout; /* See MXFFrameLayout enum */
     int video_line_map[2];
 #define MXF_FIELD_DOMINANCE_DEFAULT 0
@@ -322,6 +326,7 @@ typedef struct MXFContext {
     int nb_index_tables;
     MXFIndexTable *index_tables;
     int eia608_extract;
+    int no_tail_scan;
 } MXFContext;
 
 /* NOTE: klv_offset is not set (-1) for local keys */
@@ -1155,6 +1160,9 @@ static int mxf_read_track(void *arg, AVIOContext *pb, int tag, int size, UID uid
         track->edit_rate.num = avio_rb32(pb);
         track->edit_rate.den = avio_rb32(pb);
         break;
+    case 0x4b02:
+        track->origin = avio_rb64(pb);
+        break;
     case 0x4803:
         avio_read(pb, track->sequence_ref, 16);
         break;
@@ -1171,9 +1179,6 @@ static int mxf_read_sequence(void *arg, AVIOContext *pb, int tag, int size, UID 
         break;
     case 0x0201:
         avio_read(pb, sequence->data_definition_ul, 16);
-        break;
-        case 0x4b02:
-        sequence->origin = avio_r8(pb);
         break;
     case 0x1001:
         return mxf_read_strong_ref_array(pb, &sequence->structural_components_refs,
@@ -1365,6 +1370,18 @@ static int mxf_read_generic_descriptor(void *arg, AVIOContext *pb, int tag, int 
         break;
     case 0x3202:
         descriptor->height = avio_rb32(pb);
+        break;
+    case 0x3208:
+        descriptor->stored_height = avio_rb32(pb);
+        break;
+    case 0x3209:
+        descriptor->stored_width = avio_rb32(pb);
+        break;
+    case 0x320A:
+        descriptor->x_offset = avio_rb32(pb);
+        break;
+    case 0x320B:
+        descriptor->y_offset = avio_rb32(pb);
         break;
     case 0x320C:
         descriptor->frame_layout = avio_r8(pb);
@@ -2685,7 +2702,7 @@ static int parse_mca_labels(MXFContext *mxf, MXFTrack *source_track, MXFDescript
 static int mxf_parse_structural_metadata(MXFContext *mxf)
 {
     MXFPackage *material_package = NULL;
-    int k, ret;
+    int k, ret, fields_per_frame;
 
     /* TODO: handle multiple material packages (OP3x) */
     for (int i = 0; i < mxf->packages_count; i++) {
@@ -2910,8 +2927,7 @@ static int mxf_parse_structural_metadata(MXFContext *mxf)
             container_ul = mxf_get_codec_ul(mxf_picture_essence_container_uls, essence_container_ul);
             if (st->codecpar->codec_id == AV_CODEC_ID_NONE)
                 st->codecpar->codec_id = container_ul->id;
-            st->codecpar->width = descriptor->width;
-            st->codecpar->height = descriptor->height; /* Field height, not frame height */
+            fields_per_frame = 1;
             switch (descriptor->frame_layout) {
                 case FullFrame:
                     st->codecpar->field_order = AV_FIELD_PROGRESSIVE;
@@ -2968,10 +2984,24 @@ static int mxf_parse_structural_metadata(MXFContext *mxf)
                         }
                     }
                     /* Turn field height into frame height. */
-                    st->codecpar->height *= 2;
+                    fields_per_frame = 2;
                     break;
                 default:
                     av_log(mxf->fc, AV_LOG_INFO, "Unknown frame layout type: %d\n", descriptor->frame_layout);
+            }
+
+            st->codecpar->width = descriptor->width;
+            st->codecpar->height = descriptor->height * fields_per_frame;
+
+            if ((descriptor->x_offset != 0) ||
+                (descriptor->y_offset != 0) ||
+                (descriptor->stored_width != descriptor->width) ||
+                (descriptor->stored_height != descriptor->height)
+            ) {
+              av_dict_set_int(&st->metadata, "crop_x", descriptor->x_offset, 0);
+              av_dict_set_int(&st->metadata, "crop_y", descriptor->y_offset * fields_per_frame, 0);
+              av_dict_set_int(&st->metadata, "crop_w", descriptor->stored_width, 0);
+              av_dict_set_int(&st->metadata, "crop_h", descriptor->stored_height * fields_per_frame, 0);
             }
 
             if (mxf_is_st_422(essence_container_ul)) {
@@ -2990,6 +3020,16 @@ static int mxf_parse_structural_metadata(MXFContext *mxf)
                 default:
                     break;
                 }
+            }
+
+            /* Frame wrapped H.264 stores exactly one coded frame per edit unit,
+             * so the edit rate is the frame rate. Without this, PAFF streams get
+             * a halved avg_frame_rate: the packet holds two field pictures, but
+             * the parser only reports the first one and thus a single field. */
+            if (st->codecpar->codec_id == AV_CODEC_ID_H264 &&
+                source_track->wrapping == FrameWrapped) {
+                st->avg_frame_rate = source_track->edit_rate;
+                st->r_frame_rate = st->avg_frame_rate;
             }
 
             if (st->codecpar->codec_id == AV_CODEC_ID_PRORES) {
@@ -3025,11 +3065,11 @@ static int mxf_parse_structural_metadata(MXFContext *mxf)
                 }
             }
             sti->need_parsing = AVSTREAM_PARSE_HEADERS;
-            if (material_track->sequence->origin) {
-                av_dict_set_int(&st->metadata, "material_track_origin", material_track->sequence->origin, 0);
+            if (material_track->origin) {
+                av_dict_set_int(&st->metadata, "material_track_origin", material_track->origin, 0);
             }
-            if (source_track->sequence->origin) {
-                av_dict_set_int(&st->metadata, "source_track_origin", source_track->sequence->origin, 0);
+            if (source_track->origin) {
+                av_dict_set_int(&st->metadata, "source_track_origin", source_track->origin, 0);
             }
             if (descriptor->aspect_ratio.num && descriptor->aspect_ratio.den)
                 sti->display_aspect_ratio = descriptor->aspect_ratio;
@@ -3504,6 +3544,117 @@ static int mxf_seek_to_previous_partition(MXFContext *mxf)
     return 1;
 }
 
+
+static int64_t mxf_find_last_partition_offset_in_chunk(uint8_t* chunk, size_t chunk_size, int32_t kag_size) {
+  size_t offset;
+
+  if (chunk_size < 16) {
+      return -1;
+  }
+
+  offset = ((chunk_size - 16) / kag_size) * kag_size;
+  while (!mxf_is_partition_pack_key(&chunk[offset])) {
+      if (offset < kag_size) {
+        return -1;
+      }
+      offset -= kag_size;
+  }
+
+  return offset;
+}
+
+/**
+ * Does a reverse scan from the end of the file and check for partition pack
+ * at every KAG alignment offset. Returns the offset of the partition
+ * (including MXF run in) when the first partition is encountered.
+ *
+ * In order to optimize performance and lower the amount of seeks the operation
+ * is done by reading larger chunks into memory.
+ */
+static int64_t mxf_find_last_partition_offset(MXFContext *mxf)
+{
+    AVIOContext *pb = mxf->fc->pb;
+    int64_t i, ret = 0;
+    const int32_t kag_size = mxf->current_partition->kag_size;
+    int64_t file_size;
+    uint8_t* chunk;
+    int64_t chunk_size;
+    int64_t chunks_in_file;
+    int64_t chunk_start;
+    int64_t chunk_end;
+    int64_t clamped_chunk_size;
+
+    if (!mxf->current_partition) {
+      return AVERROR_INVALIDDATA;
+    }
+
+    if (!(pb->seekable & AVIO_SEEKABLE_NORMAL)) {
+        return AVERROR_INVALIDDATA;
+    }
+
+    file_size = avio_size(pb);
+
+    if (file_size < 0) {
+      return AVERROR_INVALIDDATA;
+    }
+
+    av_log(mxf->fc, AV_LOG_WARNING, "Missing footer. Initiating last partition scan.\n");
+
+    chunk_size = 1024 * 16 * kag_size;
+
+    chunk = av_mallocz(chunk_size);
+
+    chunks_in_file = (file_size - mxf->run_in) / chunk_size;
+
+    for (i = chunks_in_file; i >= 0; i--) {
+        chunk_start = mxf->run_in + (i * chunk_size);
+        chunk_end = FFMIN(file_size, chunk_start + chunk_size);
+
+        if ((ret = avio_seek(pb, chunk_start, SEEK_SET)) < 0) {
+            av_log(mxf->fc, AV_LOG_ERROR, "Failed to seek. Aborting partition scan\n");
+            break;
+        }
+
+        // The first chunk at the end might be a bit smaller than the full chunk size
+        clamped_chunk_size = chunk_end - chunk_start;
+        if ((ret = avio_read(pb, chunk, clamped_chunk_size)) < 0) {
+            av_log(mxf->fc, AV_LOG_ERROR, "Failed to read chunk. Aborting partition scan\n");
+            break;
+        }
+        av_log(mxf->fc, AV_LOG_DEBUG, "Read chunk of size %ld\n", clamped_chunk_size);
+        if ((ret = mxf_find_last_partition_offset_in_chunk(chunk, clamped_chunk_size, kag_size)) < 0) {
+            av_log(mxf->fc, AV_LOG_DEBUG, "No partition pack found in chunk\n");
+            continue;
+        }
+
+        ret = chunk_start + ret;
+
+        av_log(mxf->fc, AV_LOG_INFO, "Found last partition at offset %lx\n", ret);
+
+        break;
+    }
+
+    if (chunk != 0) {
+        av_freep(&chunk);
+    }
+
+    return ret;
+}
+
+static int mxf_is_fixed_frame_size(MXFContext *mxf)
+{
+  int i;
+
+  MXFMetadataSetGroup *mg = &mxf->metadata_set_groups[IndexTableSegment];
+  for (i = 0; i < mg->metadata_sets_count; i++) {
+      MXFIndexTableSegment *s = (MXFIndexTableSegment*)mg->metadata_sets[i];
+      if (s->edit_unit_byte_count > 0) {
+        return 1;
+      }
+  }
+  return 0;
+}
+
 /**
  * Called when essence is encountered
  * @return <= 0 if we should stop parsing, > 0 if we should keep going
@@ -3516,15 +3667,25 @@ static int mxf_parse_handle_essence(MXFContext *mxf)
     if (mxf->parsing_backward) {
         return mxf_seek_to_previous_partition(mxf);
     } else {
+        /* remember where we were so we don't end up seeking further back than this */
+        mxf->last_forward_tell = avio_tell(pb);
+
         if (!mxf->footer_partition) {
-            av_log(mxf->fc, AV_LOG_TRACE, "no FooterPartition\n");
-            return 0;
+            if (mxf->no_tail_scan ||
+                // We don't need to parse all partitions if this is a fix frame size
+                // MXF
+                mxf_is_fixed_frame_size(mxf) ||
+                ((ret = mxf_find_last_partition_offset(mxf)) < 0)
+            ) {
+              ret = 0;
+              av_log(mxf->fc, AV_LOG_TRACE, "no FooterPartition\n");
+              return 0;
+            }
+
+            mxf->footer_partition = ret - mxf->run_in;
         }
 
         av_log(mxf->fc, AV_LOG_TRACE, "seeking to FooterPartition\n");
-
-        /* remember where we were so we don't end up seeking further back than this */
-        mxf->last_forward_tell = avio_tell(pb);
 
         if (!(pb->seekable & AVIO_SEEKABLE_NORMAL)) {
             av_log(mxf->fc, AV_LOG_INFO, "file is not seekable - not parsing FooterPartition\n");
@@ -4149,6 +4310,11 @@ static int mxf_read_packet(AVFormatContext *s, AVPacket *pkt)
                     mxf->current_klv_data = (KLVPacket){{0}};
                     return ret;
                 }
+
+                if (ret < klv.length) {
+                    mxf->current_klv_data = (KLVPacket){{0}};
+                    return AVERROR_EOF;
+                }
             }
             pkt->stream_index = index;
             pkt->pos = klv.offset;
@@ -4304,10 +4470,6 @@ static int mxf_read_seek(AVFormatContext *s, int stream_index, int64_t sample_ti
                 return sample_time;
             /* get the stored order index from the display order index */
             sample_time += t->offsets[sample_time];
-        } else {
-            /* no IndexEntryArray (one or more CBR segments)
-             * make sure we don't seek past the end */
-            sample_time = FFMIN(sample_time, source_track->original_duration - 1);
         }
 
         if (source_track->wrapping == UnknownWrapped)
@@ -4347,6 +4509,9 @@ static int mxf_read_seek(AVFormatContext *s, int stream_index, int64_t sample_ti
 static const AVOption options[] = {
     { "eia608_extract", "extract eia 608 captions from s436m track",
       offsetof(MXFContext, eia608_extract), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1,
+      AV_OPT_FLAG_DECODING_PARAM },
+    { "no_tail_scan", "Disable tail scan for partition when footer is missing",
+      offsetof(MXFContext, no_tail_scan), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1,
       AV_OPT_FLAG_DECODING_PARAM },
     { NULL },
 };

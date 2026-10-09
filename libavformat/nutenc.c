@@ -566,6 +566,9 @@ static int write_streaminfo(NUTContext *nut, AVIOContext *bc, int stream_id) {
         else
             snprintf(buf, sizeof(buf), "%d/%d", st->avg_frame_rate.num, st->avg_frame_rate.den);
         count += add_info(dyn_bc, "r_frame_rate", buf);
+
+        snprintf(buf, sizeof(buf), "%d", st->codecpar->field_order);
+        count += add_info(dyn_bc, "field_order", buf);
     }
     dyn_size = avio_close_dyn_buf(dyn_bc, &dyn_buf);
 

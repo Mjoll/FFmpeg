@@ -518,14 +518,16 @@ static void readrate_sleep(Demuxer *d)
         now = av_gettime_relative();
         wc_elapsed = now - d->wallclock_start;
         max_pts = stream_ts_offset + initial_burst + wc_elapsed * d->readrate;
-        lag = FFMAX(max_pts - pts, 0);
-        if ( (!ds->lag && lag > 0.3 * AV_TIME_BASE) || ( lag > ds->lag + 0.3 * AV_TIME_BASE) ) {
-            ds->lag = lag;
-            ds->resume_wc = now;
-            ds->resume_pts = pts;
-            av_log_once(ds, AV_LOG_WARNING, AV_LOG_DEBUG, &resume_warn,
-                        "Resumed reading at pts %0.3f with rate %0.3f after a lag of %0.3fs\n",
-                        (float)pts/AV_TIME_BASE, d->readrate_catchup, (float)lag/AV_TIME_BASE);
+        if (d->readrate_catchup > 0.0) {
+          lag = FFMAX(max_pts - pts, 0);
+          if ( (!ds->lag && lag > 0.3 * AV_TIME_BASE) || ( lag > ds->lag + 0.3 * AV_TIME_BASE) ) {
+              ds->lag = lag;
+              ds->resume_wc = now;
+              ds->resume_pts = pts;
+              av_log_once(ds, AV_LOG_WARNING, AV_LOG_DEBUG, &resume_warn,
+                          "Resumed reading at pts %0.3f with rate %0.3f after a lag of %0.3fs\n",
+                          (float)pts/AV_TIME_BASE, d->readrate_catchup, (float)lag/AV_TIME_BASE);
+          }
         }
         if (ds->lag && !lag)
             ds->lag = ds->resume_wc = ds->resume_pts = 0;
@@ -1914,8 +1916,8 @@ int ifile_open(const OptionsContext *o, const char *filename, Scheduler *sch)
                    d->readrate_initial_burst);
             return AVERROR(EINVAL);
         }
-        d->readrate_catchup = o->readrate_catchup ? o->readrate_catchup : d->readrate * 1.05;
-        if (d->readrate_catchup < d->readrate) {
+        d->readrate_catchup = o->readrate_catchup;
+        if ((d->readrate_catchup != 0.0) && (d->readrate_catchup < d->readrate)) {
             av_log(d, AV_LOG_ERROR,
                    "Option -readrate_catchup is %0.3f; it must be at least equal to %0.3f.\n",
                    d->readrate_catchup, d->readrate);
