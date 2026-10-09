@@ -38,6 +38,7 @@ const AVCodecTag ff_nut_subtitle_tags[] = {
 
 const AVCodecTag ff_nut_data_tags[] = {
     { AV_CODEC_ID_TEXT,             MKTAG('U', 'T', 'F', '8') },
+    { AV_CODEC_ID_SMPTE_436M_ANC,   MKTAG('4', '3', '6', 'M') },
     { AV_CODEC_ID_NONE,             0 }
 };
 
