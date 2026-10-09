@@ -326,6 +326,7 @@ typedef struct MXFContext {
     int nb_index_tables;
     MXFIndexTable *index_tables;
     int eia608_extract;
+    int no_tail_scan;
 } MXFContext;
 
 /* NOTE: klv_offset is not set (-1) for local keys */
@@ -3543,6 +3544,117 @@ static int mxf_seek_to_previous_partition(MXFContext *mxf)
     return 1;
 }
 
+
+static int64_t mxf_find_last_partition_offset_in_chunk(uint8_t* chunk, size_t chunk_size, int32_t kag_size) {
+  size_t offset;
+
+  if (chunk_size < 16) {
+      return -1;
+  }
+
+  offset = ((chunk_size - 16) / kag_size) * kag_size;
+  while (!mxf_is_partition_pack_key(&chunk[offset])) {
+      if (offset < kag_size) {
+        return -1;
+      }
+      offset -= kag_size;
+  }
+
+  return offset;
+}
+
+/**
+ * Does a reverse scan from the end of the file and check for partition pack
+ * at every KAG alignment offset. Returns the offset of the partition
+ * (including MXF run in) when the first partition is encountered.
+ *
+ * In order to optimize performance and lower the amount of seeks the operation
+ * is done by reading larger chunks into memory.
+ */
+static int64_t mxf_find_last_partition_offset(MXFContext *mxf)
+{
+    AVIOContext *pb = mxf->fc->pb;
+    int64_t i, ret = 0;
+    const int32_t kag_size = mxf->current_partition->kag_size;
+    int64_t file_size;
+    uint8_t* chunk;
+    int64_t chunk_size;
+    int64_t chunks_in_file;
+    int64_t chunk_start;
+    int64_t chunk_end;
+    int64_t clamped_chunk_size;
+
+    if (!mxf->current_partition) {
+      return AVERROR_INVALIDDATA;
+    }
+
+    if (!(pb->seekable & AVIO_SEEKABLE_NORMAL)) {
+        return AVERROR_INVALIDDATA;
+    }
+
+    file_size = avio_size(pb);
+
+    if (file_size < 0) {
+      return AVERROR_INVALIDDATA;
+    }
+
+    av_log(mxf->fc, AV_LOG_WARNING, "Missing footer. Initiating last partition scan.\n");
+
+    chunk_size = 1024 * 16 * kag_size;
+
+    chunk = av_mallocz(chunk_size);
+
+    chunks_in_file = (file_size - mxf->run_in) / chunk_size;
+
+    for (i = chunks_in_file; i >= 0; i--) {
+        chunk_start = mxf->run_in + (i * chunk_size);
+        chunk_end = FFMIN(file_size, chunk_start + chunk_size);
+
+        if ((ret = avio_seek(pb, chunk_start, SEEK_SET)) < 0) {
+            av_log(mxf->fc, AV_LOG_ERROR, "Failed to seek. Aborting partition scan\n");
+            break;
+        }
+
+        // The first chunk at the end might be a bit smaller than the full chunk size
+        clamped_chunk_size = chunk_end - chunk_start;
+        if ((ret = avio_read(pb, chunk, clamped_chunk_size)) < 0) {
+            av_log(mxf->fc, AV_LOG_ERROR, "Failed to read chunk. Aborting partition scan\n");
+            break;
+        }
+        av_log(mxf->fc, AV_LOG_DEBUG, "Read chunk of size %ld\n", clamped_chunk_size);
+        if ((ret = mxf_find_last_partition_offset_in_chunk(chunk, clamped_chunk_size, kag_size)) < 0) {
+            av_log(mxf->fc, AV_LOG_DEBUG, "No partition pack found in chunk\n");
+            continue;
+        }
+
+        ret = chunk_start + ret;
+
+        av_log(mxf->fc, AV_LOG_INFO, "Found last partition at offset %lx\n", ret);
+
+        break;
+    }
+
+    if (chunk != 0) {
+        av_freep(&chunk);
+    }
+
+    return ret;
+}
+
+static int mxf_is_fixed_frame_size(MXFContext *mxf)
+{
+  int i;
+
+  MXFMetadataSetGroup *mg = &mxf->metadata_set_groups[IndexTableSegment];
+  for (i = 0; i < mg->metadata_sets_count; i++) {
+      MXFIndexTableSegment *s = (MXFIndexTableSegment*)mg->metadata_sets[i];
+      if (s->edit_unit_byte_count > 0) {
+        return 1;
+      }
+  }
+  return 0;
+}
+
 /**
  * Called when essence is encountered
  * @return <= 0 if we should stop parsing, > 0 if we should keep going
@@ -3555,15 +3667,25 @@ static int mxf_parse_handle_essence(MXFContext *mxf)
     if (mxf->parsing_backward) {
         return mxf_seek_to_previous_partition(mxf);
     } else {
+        /* remember where we were so we don't end up seeking further back than this */
+        mxf->last_forward_tell = avio_tell(pb);
+
         if (!mxf->footer_partition) {
-            av_log(mxf->fc, AV_LOG_TRACE, "no FooterPartition\n");
-            return 0;
+            if (mxf->no_tail_scan ||
+                // We don't need to parse all partitions if this is a fix frame size
+                // MXF
+                mxf_is_fixed_frame_size(mxf) ||
+                ((ret = mxf_find_last_partition_offset(mxf)) < 0)
+            ) {
+              ret = 0;
+              av_log(mxf->fc, AV_LOG_TRACE, "no FooterPartition\n");
+              return 0;
+            }
+
+            mxf->footer_partition = ret - mxf->run_in;
         }
 
         av_log(mxf->fc, AV_LOG_TRACE, "seeking to FooterPartition\n");
-
-        /* remember where we were so we don't end up seeking further back than this */
-        mxf->last_forward_tell = avio_tell(pb);
 
         if (!(pb->seekable & AVIO_SEEKABLE_NORMAL)) {
             av_log(mxf->fc, AV_LOG_INFO, "file is not seekable - not parsing FooterPartition\n");
@@ -4387,6 +4509,9 @@ static int mxf_read_seek(AVFormatContext *s, int stream_index, int64_t sample_ti
 static const AVOption options[] = {
     { "eia608_extract", "extract eia 608 captions from s436m track",
       offsetof(MXFContext, eia608_extract), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1,
+      AV_OPT_FLAG_DECODING_PARAM },
+    { "no_tail_scan", "Disable tail scan for partition when footer is missing",
+      offsetof(MXFContext, no_tail_scan), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1,
       AV_OPT_FLAG_DECODING_PARAM },
     { NULL },
 };
