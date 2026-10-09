@@ -607,6 +607,10 @@ static int decode_info_header(NUTContext *nut)
                 continue;
             }
 
+            if (stream_id_plus1 && !strcmp(name, "field_order")) {
+              sscanf(str_value, "%d", &st->codecpar->field_order);
+            }
+
             if (metadata && av_strcasecmp(name, "Uses") &&
                 av_strcasecmp(name, "Depends") && av_strcasecmp(name, "Replaces")) {
                 if (event_flags)
