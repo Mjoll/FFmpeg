@@ -99,6 +99,7 @@ typedef struct FileContext {
 #if HAVE_DIRENT_H
     DIR *dir;
 #endif
+    int ensure_blocking;
 } FileContext;
 
 static const AVOption file_options[] = {
@@ -112,6 +113,7 @@ static const AVOption file_options[] = {
 static const AVOption pipe_options[] = {
     { "blocksize", "set I/O operation maximum block size", offsetof(FileContext, blocksize), AV_OPT_TYPE_INT, { .i64 = INT_MAX }, 1, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM },
     { "fd", "set file descriptor", offsetof(FileContext, fd), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, INT_MAX, AV_OPT_FLAG_ENCODING_PARAM },
+    { "ensure_blocking", "ensure that the file descriptor is in blocking mode", offsetof(FileContext, ensure_blocking), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_ENCODING_PARAM },
     { NULL }
 };
 
@@ -428,6 +430,32 @@ const URLProtocol ff_file_protocol = {
 
 #if CONFIG_PIPE_PROTOCOL
 
+static int pipe_is_non_blocking(int fd)
+{
+    int ret = fcntl(fd, F_GETFL);
+    return ((ret != -1) && (ret & (O_NONBLOCK | O_NDELAY)));
+}
+
+static int make_fd_blocking(int fd)
+{
+    int ret = fcntl(fd, F_GETFL);
+
+    if (ret == -1)
+    {
+        return -1;
+    }
+
+    ret = ret & ~O_NDELAY;
+    ret = ret & ~O_NONBLOCK;
+
+    if (fcntl(fd, F_SETFL, ret) == -1)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
 static int pipe_open(URLContext *h, const char *filename, int flags)
 {
     FileContext *c = h->priv_data;
@@ -449,6 +477,15 @@ static int pipe_open(URLContext *h, const char *filename, int flags)
                 return AVERROR(EINVAL);
         }
         c->fd = fd;
+    }
+
+    if (c->ensure_blocking && pipe_is_non_blocking(fd)) {
+      av_log(h, AV_LOG_INFO, "fd=%d is non-blocking. Attempting to change it to be blocking.\n", fd);
+      if (make_fd_blocking(fd) == 0) {
+        av_log(h, AV_LOG_INFO, "Successfully make fd=%d blocking\n", fd);
+      } else {
+        av_log(h, AV_LOG_WARNING, "Failed to set fd=%d to blocking mode. Performance may suffer. Reason: %s\n", fd, strerror(errno));
+      }
     }
 
     c->fd = fd_dup(h, c->fd);
