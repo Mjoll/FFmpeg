@@ -217,6 +217,7 @@ External library support:
   --enable-libaribcaption  enable ARIB text and caption decoding via libaribcaption [no]
   --enable-libass          enable libass subtitles rendering,
                            needed for subtitles and ass filter [no]
+  --enable-libbifrost-frames enable Bifrost Frames shared memory I/O [no]
   --enable-libbluray       enable BluRay reading using libbluray [no]
   --enable-libbs2b         enable bs2b DSP library [no]
   --enable-libcaca         enable textual display using libcaca [no]
@@ -1928,6 +1929,7 @@ EXTERNAL_LIBRARY_LIST="
     libaom
     libaribcaption
     libass
+    libbifrost_frames
     libbluray
     libbs2b
     libcaca
@@ -3799,6 +3801,8 @@ avfoundation_indev_suggest="coregraphics applicationservices"
 avfoundation_indev_extralibs="-framework Foundation"
 audiotoolbox_outdev_deps="audiotoolbox pthreads AudioObjectPropertyAddress"
 audiotoolbox_outdev_extralibs="-framework AudioToolbox -framework CoreAudio"
+bifrost_frames_indev_deps="libbifrost_frames"
+bifrost_frames_outdev_deps="libbifrost_frames"
 caca_outdev_deps="libcaca"
 decklink_deps_any="libdl LoadLibrary"
 decklink_indev_deps="decklink threads"
@@ -7026,6 +7030,7 @@ enabled libaribcaption    && require_pkg_config libaribcaption "libaribcaption >
 enabled lv2               && require_pkg_config lv2 lilv-0 "lilv/lilv.h" lilv_world_new
 enabled libiec61883       && require libiec61883 libiec61883/iec61883.h iec61883_cmp_connect -lraw1394 -lavc1394 -lrom1394 -liec61883
 enabled libass            && require_pkg_config libass "libass >= 0.11.0" ass/ass.h ass_library_init
+enabled libbifrost_frames && require_pkg_config libbifrost_frames bifrost-frames bifrost_frames.h bifrost_stream_open
 enabled libbluray         && require_pkg_config libbluray libbluray libbluray/bluray.h bd_open
 enabled libbs2b           && require_pkg_config libbs2b libbs2b bs2b.h bs2b_open
 enabled libcelt           && require libcelt celt/celt.h celt_decode -lcelt0 &&

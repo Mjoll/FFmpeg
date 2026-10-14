@@ -18,6 +18,8 @@ OBJS-$(CONFIG_ALSA_OUTDEV)               += alsa_enc.o alsa.o
 OBJS-$(CONFIG_ANDROID_CAMERA_INDEV)      += android_camera.o
 OBJS-$(CONFIG_AUDIOTOOLBOX_OUTDEV)       += audiotoolbox.o
 OBJS-$(CONFIG_AVFOUNDATION_INDEV)        += avfoundation.o
+OBJS-$(CONFIG_BIFROST_FRAMES_INDEV)      += bifrost_frames_dec.o bifrost_frames_common.o
+OBJS-$(CONFIG_BIFROST_FRAMES_OUTDEV)     += bifrost_frames_enc.o bifrost_frames_common.o
 OBJS-$(CONFIG_CACA_OUTDEV)               += caca.o
 OBJS-$(CONFIG_DECKLINK_OUTDEV)           += decklink_enc.o decklink_enc_c.o decklink_common.o
 OBJS-$(CONFIG_DECKLINK_INDEV)            += decklink_dec.o decklink_dec_c.o decklink_common.o
@@ -59,6 +61,7 @@ SHLIBOBJS-$(CONFIG_DECKLINK_OUTDEV)      += ccfifo.o
 # Windows resource file
 SHLIBOBJS-$(HAVE_GNU_WINDRES)            += avdeviceres.o
 
+SKIPHEADERS-$(CONFIG_LIBBIFROST_FRAMES)  += bifrost_frames_common.h
 SKIPHEADERS                              += decklink_common.h
 SKIPHEADERS-$(CONFIG_DECKLINK)           += decklink_enc.h decklink_dec.h \
                                             decklink_common_c.h
