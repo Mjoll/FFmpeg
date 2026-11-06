@@ -1029,7 +1029,7 @@ static int decode_audio_specific_config_gb(AACDecContext *ac,
                                            int get_bit_alignment,
                                            int sync_extension)
 {
-    int i, ret;
+    int i, ret, ps_signalled;
     GetBitContext gbc = *gb;
     MPEG4AudioConfig *m4ac = &oc->m4ac;
     MPEG4AudioConfig m4ac_bak = *m4ac;
@@ -1038,6 +1038,9 @@ static int decode_audio_specific_config_gb(AACDecContext *ac,
         *m4ac = m4ac_bak;
         return AVERROR_INVALIDDATA;
     }
+
+    // Save what the header said about PS.
+    ps_signalled = m4ac->ps != -1;
 
     if (m4ac->sampling_index > 12) {
         av_log(avctx, AV_LOG_ERROR,
@@ -1087,6 +1090,10 @@ static int decode_audio_specific_config_gb(AACDecContext *ac,
                                       m4ac->object_type);
         return AVERROR(ENOSYS);
     }
+
+    /* decode_ga_specific_config() may have turned ps == -1 into an
+     * assumed ps == 1; only that case counts as assumed. */
+    oc->ps_assumed = !ps_signalled && m4ac->ps == 1;
 
     ff_dlog(avctx,
             "AOT %d chan config %d sampling index %d (%d) SBR %d PS %d\n",
@@ -1963,6 +1970,8 @@ static int decode_extension_payload(AACDecContext *ac, GetBitContext *gb, int cn
                    ac->avctx->ch_layout.nb_channels == 1) {
             ac->oc[1].m4ac.sbr = 1;
             ac->oc[1].m4ac.ps = 1;
+            // Inferred from SBR data in a mono stream, not signalled.
+            ac->oc[1].ps_assumed = 1;
             ac->avctx->profile = AV_PROFILE_AAC_HE_V2;
             ff_aac_output_configure(ac, ac->oc[1].layout_map, ac->oc[1].layout_map_tags,
                                     ac->oc[1].status, 1);
