@@ -370,6 +370,7 @@ typedef struct OutputConfiguration {
     int layout_map_tags;
     AVChannelLayout ch_layout;
     enum OCStatus status;
+    int ps_assumed; ///< m4ac.ps == 1 was inferred for mono SBR, not signalled
     AACUSACConfig usac;
 } OutputConfiguration;
 
