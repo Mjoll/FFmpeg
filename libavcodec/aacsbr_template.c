@@ -975,6 +975,7 @@ static void read_sbr_extension(AACDecContext *ac, SpectralBandReplication *sbr,
             *num_bits_left = 0;
         } else {
             *num_bits_left -= ff_ps_read_data(ac->avctx, gb, &sbr->ps.common, *num_bits_left);
+            ac->ps_data_read = 1;
             ac->avctx->profile = AV_PROFILE_AAC_HE_V2;
             // ensure the warning is not printed if PS extension is present
             ac->warned_he_aac_mono = 1;
@@ -1090,6 +1091,7 @@ static unsigned int read_sbr_data(AACDecContext *ac, SpectralBandReplication *sb
         sbr_turnoff(sbr);
         return get_bits_count(gb) - cnt;
     }
+    ac->sbr_data_read = 1;
     if (get_bits1(gb)) { // bs_extended_data
         int num_bits_left = get_bits(gb, 4); // bs_extension_size
         if (num_bits_left == 15)

@@ -1982,7 +1982,9 @@ static int decode_extension_payload(AACDecContext *ac, GetBitContext *gb, int cn
 
         ac->proc.sbr_decode_extension(ac, che, gb, crc_flag, cnt, elem_type);
 
-        if (ac->oc[1].m4ac.ps == 1 && !ac->warned_he_aac_mono) {
+        // An assumed PS is only kept or dropped at the end of the frame.
+        if (ac->oc[1].m4ac.ps == 1 && !ac->oc[1].ps_assumed &&
+            !ac->warned_he_aac_mono) {
             av_log(ac->avctx, AV_LOG_VERBOSE, "Treating HE-AAC mono as stereo.\n");
             ac->warned_he_aac_mono = 1;
         }
@@ -2253,6 +2255,8 @@ static int decode_frame_ga(AVCodecContext *avctx, AACDecContext *ac,
     AVFrame *frame = ac->frame;
 
     int payload_alignment = get_bits_count(gb);
+    ac->sbr_data_read = 0;
+    ac->ps_data_read  = 0;
     // parse
     while ((elem_type = get_bits(gb, 3)) != TYPE_END) {
         elem_id = get_bits(gb, 4);
@@ -2374,6 +2378,22 @@ static int decode_frame_ga(AVCodecContext *avctx, AACDecContext *ac,
 
     if (!avctx->ch_layout.nb_channels)
         return 0;
+
+    /* Decide an assumed PS once, on the first frame with audio. If that
+     * frame has SBR data without PS data, decode as mono. Without SBR
+     * data no decision is possible and the stereo assumption stays. */
+    if (ac->oc[1].ps_assumed && audio_found) {
+        ac->oc[1].ps_assumed = 0;
+        if (ac->sbr_data_read && !ac->ps_data_read) {
+            ac->oc[1].m4ac.ps = 0;
+            avctx->profile = AV_PROFILE_AAC_HE;
+            err = ff_aac_output_configure(ac, ac->oc[1].layout_map,
+                                          ac->oc[1].layout_map_tags,
+                                          ac->oc[1].status, 1);
+            if (err < 0)
+                return err;
+        }
+    }
 
     multiplier = (ac->oc[1].m4ac.sbr == 1) ? ac->oc[1].m4ac.ext_sample_rate > ac->oc[1].m4ac.sample_rate : 0;
     samples <<= multiplier;

@@ -370,7 +370,8 @@ typedef struct OutputConfiguration {
     int layout_map_tags;
     AVChannelLayout ch_layout;
     enum OCStatus status;
-    int ps_assumed; ///< m4ac.ps == 1 was inferred for mono SBR, not signalled
+    int ps_assumed; ///< m4ac.ps == 1 was inferred for mono SBR, not signalled,
+                    ///< and has not yet been checked against the first frame
     AACUSACConfig usac;
 } OutputConfiguration;
 
@@ -531,6 +532,9 @@ struct AACDecContext {
     unsigned warned_71_wide;
     int warned_gain_control;
     int warned_he_aac_mono;
+
+    int sbr_data_read; ///< sbr_data() was parsed in the current frame
+    int ps_data_read;  ///< ps_data() was parsed in the current frame
 
     int is_fixed;
 };
