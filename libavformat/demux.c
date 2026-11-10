@@ -139,8 +139,15 @@ static int set_codec_from_probe_data(AVFormatContext *s, AVStream *st,
                fmt->name, score);
         for (int i = 0; fmt_id_type[i].name; i++) {
             if (!strcmp(fmt->name, fmt_id_type[i].name)) {
+                /* A stream the demuxer typed as audio is probed only to refine
+                 * its codec, as raw video probes like AV1 Annex B can outscore
+                 * the request on plain audio payloads. With a request above
+                 * AVPROBE_SCORE_STREAM_RETRY the audio type is the demuxer's:
+                 * any round that changed it would have ended probing. */
                 if (fmt_id_type[i].type != AVMEDIA_TYPE_AUDIO &&
-                    st->codecpar->sample_rate)
+                    (st->codecpar->sample_rate ||
+                     (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
+                      sti->request_probe > AVPROBE_SCORE_STREAM_RETRY)))
                     continue;
                 if (sti->request_probe > score &&
                     st->codecpar->codec_id != fmt_id_type[i].id)
